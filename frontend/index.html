@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>FANUC 매뉴얼 챗봇</title>
+  <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+  <div class="app">
+    <header class="header">
+      <div class="brand">
+        <span class="brand-mark">FANUC</span>
+        <div>
+          <h1>매뉴얼 챗봇</h1>
+          <p>알람 · G/M 코드 · 보정 · 운전 복구</p>
+        </div>
+      </div>
+      <span class="status" id="status">8787</span>
+    </header>
+
+    <main class="chat" id="chat" aria-live="polite"></main>
+
+    <section class="suggest" id="suggest">
+      <button type="button" data-q="G43이 무엇인가요?">G43 공구 길이 보정</button>
+      <button type="button" data-q="알람 410은 무슨 뜻인가요?">알람 410</button>
+      <button type="button" data-q="G54와 G55 차이가 뭔가요?">G54 / G55</button>
+      <button type="button" data-q="비상정지 후 어떻게 복구하나요?">비상정지 복구</button>
+    </section>
+
+    <form class="composer" id="form">
+      <label class="sr-only" for="input">질문</label>
+      <textarea id="input" rows="1" placeholder="알람 번호, G코드, 또는 증상을 입력하세요" required></textarea>
+      <button type="submit" id="send">전송</button>
+    </form>
+  </div>
+  <script src="/js/app.js"></script>
+</body>
+</html>
