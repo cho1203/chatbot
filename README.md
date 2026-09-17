@@ -34,3 +34,9 @@ PYTHONPATH=.pip python3 backend/server.py
 브라우저에서 http://127.0.0.1:8787 을 엽니다.
 
 채팅은 `POST /api/chat` 으로 처리합니다.
+
+## 이전 화면으로 되돌리기
+
+헤더 오른쪽 **이전 화면** 버튼을 누르면, 이번 작업 전의 밝은 채팅 UI로 돌아갑니다. 다시 **새 화면**을 누르면 현장 조수 UI로 옵니다. 선택은 브라우저에 저장됩니다.
+
+파일 백업은 `frontend/classic/` 과 `frontend/css/style.classic.css` 에도 있습니다.

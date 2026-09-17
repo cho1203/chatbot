@@ -4,24 +4,42 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>FANUC 매뉴얼 챗봇</title>
-  <link rel="stylesheet" href="/css/style.css">
+  <link rel="stylesheet" href="/css/style.css?v=workshop4">
 </head>
-<body>
+<body class="workshop">
   <div class="app">
     <header class="header">
       <div class="brand">
+        <span class="led" aria-hidden="true"></span>
         <span class="brand-mark">FANUC</span>
         <div>
           <h1>매뉴얼 챗봇</h1>
-          <p>알람 · G/M 코드 · 보정 · 운전 복구</p>
+          <p id="header-sub">현장 조수 · 알람 카드 · 기계별 답변</p>
         </div>
       </div>
-      <span class="status" id="status">8787</span>
+      <div class="header-actions">
+        <button type="button" id="ui-toggle" class="ui-toggle">이전 화면</button>
+      </div>
     </header>
+
+    <section class="machine-bar workshop-only" id="machine-bar">
+      <span>기계</span>
+      <button type="button" class="machine-btn is-on" data-machine="mill_0i">0i 밀링</button>
+      <button type="button" class="machine-btn" data-machine="lathe_0i">0i 선반</button>
+      <button type="button" class="machine-btn" data-machine="mill_31i">31i</button>
+    </section>
 
     <main class="chat" id="chat" aria-live="polite"></main>
 
-    <section class="suggest" id="suggest">
+    <section class="tabs workshop-only" id="tabs">
+      <button type="button" class="tab is-on" data-tab="alarm">알람</button>
+      <button type="button" class="tab" data-tab="offset">보정</button>
+      <button type="button" class="tab" data-tab="recover">복구</button>
+    </section>
+
+    <section class="suggest workshop-only" id="suggest-workshop"></section>
+
+    <section class="suggest classic-only" id="suggest">
       <button type="button" data-q="G43이 무엇인가요?">G43 공구 길이 보정</button>
       <button type="button" data-q="알람 410은 무슨 뜻인가요?">알람 410</button>
       <button type="button" data-q="G54와 G55 차이가 뭔가요?">G54 / G55</button>
@@ -30,10 +48,12 @@
 
     <form class="composer" id="form">
       <label class="sr-only" for="input">질문</label>
-      <textarea id="input" rows="1" placeholder="알람 번호, G코드, 또는 증상을 입력하세요" required></textarea>
+      <div class="composer-box">
+        <textarea id="input" rows="1" placeholder="알람 번호, G코드, 또는 증상을 입력하세요" required></textarea>
+      </div>
       <button type="submit" id="send">전송</button>
     </form>
   </div>
-  <script src="/js/app.js"></script>
+  <script src="/js/app.js?v=workshop1"></script>
 </body>
 </html>
