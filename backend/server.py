@@ -14,6 +14,9 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from llm import generate_card_data, generate_chat_answer, model_ready
+from rag import chunk_count, search as chroma_search
+
 ROOT = Path(__file__).resolve().parent.parent
 load_dotenv(ROOT / ".env")
 
@@ -65,8 +68,9 @@ app = FastAPI(title="FANUC 매뉴얼 챗봇")
 class ChatRequest(BaseModel):
     message: str = Field(min_length=1)
     session_id: str | None = None
-    machine: str | None = "mill_0i" //최종적으로 수정한 부분을 바탕으로 한 자료를 받아서 작성하기
+    machine: str | None = "mill_0i"
     mode: str | None = "workshop"
+    source: str | None = "chat"
 
 
 class Source(BaseModel):
@@ -325,18 +329,58 @@ def load_chunks() -> list[dict]:
 
 CHUNKS = load_chunks()
 TOKEN_RE = re.compile(r"[a-zA-Z]+[0-9.]*|[0-9]+|[가-힣]{2,}")
+WEAK_TOKENS = {"주의", "방법", "하는", "어떻게", "무엇", "인가요", "해주세요", "관련", "내용"}
+OVERTRAVEL_TERMS = ("오버트래블", "오버트러블", "overtravel")
+MISSING_ANSWER = "매뉴얼에 없음\n그 번호·기능 이름으로는 못 찾았습니다."
 
 
 def tokens(text: str) -> list[str]:
     return [item.lower() for item in TOKEN_RE.findall(text)]
 
 
-def search_manuals(query: str, limit: int = 3) -> list[dict]:
+def query_has_overtravel(query: str) -> bool:
+    lowered = query.lower()
+    return any(term in lowered for term in OVERTRAVEL_TERMS)
+
+
+def hit_text(hit: dict) -> str:
+    return f"{hit.get('title', '')} {hit.get('body', '')} {hit.get('haystack', '')}".lower()
+
+
+def hit_mentions_overtravel(hit: dict) -> bool:
+    hay = hit_text(hit)
+    return any(term in hay for term in OVERTRAVEL_TERMS) or "510" in hay or "511" in hay
+
+
+def strong_query_terms(query: str) -> list[str]:
+    terms = [token for token in tokens(query) if token not in WEAK_TOKENS]
+    if query_has_overtravel(query):
+        for extra in ("오버트래블", "510", "511"):
+            if extra not in terms:
+                terms.append(extra)
+    return terms
+
+
+def hit_matches_query(query: str, hit: dict) -> bool:
+    terms = strong_query_terms(query)
+    if not terms:
+        return False
+    if query_has_overtravel(query) and not hit_mentions_overtravel(hit):
+        return False
+    hay = hit_text(hit)
+    codes = [term for term in terms if re.fullmatch(r"[a-z]+\d+|\d+", term)]
+    if codes and not any(code in hay for code in codes):
+        return False
+    return any(term in hay for term in terms)
+
+
+def search_keyword(query: str, limit: int = 3) -> list[dict]:
     query_tokens = tokens(query)
-    if not query_tokens:
+    if not query_tokens and not query_has_overtravel(query):
         return []
     codes = [token for token in query_tokens if re.fullmatch(r"[a-z]+\d+|\d+", token)]
     scored: list[dict] = []
+    overtravel = query_has_overtravel(query)
     for chunk in CHUNKS:
         hay = chunk["haystack"]
         title_l = chunk["title"].lower()
@@ -344,6 +388,8 @@ def search_manuals(query: str, limit: int = 3) -> list[dict]:
             continue
         score = 0.0
         for token in query_tokens:
+            if token in WEAK_TOKENS:
+                continue
             if token in hay:
                 score += 2.0 if re.fullmatch(r"[a-z]+\d+|\d+", token) else 1.0
         for code in codes:
@@ -351,6 +397,10 @@ def search_manuals(query: str, limit: int = 3) -> list[dict]:
                 score += 6.0
         if query.strip().lower() in title_l:
             score += 5.0
+        if overtravel and hit_mentions_overtravel(chunk):
+            score += 12.0
+            if "510" in title_l or "511" in title_l or "오버트래블" in title_l:
+                score += 8.0
         if score > 0:
             item = dict(chunk)
             item["score"] = score
@@ -359,23 +409,140 @@ def search_manuals(query: str, limit: int = 3) -> list[dict]:
     return scored[:limit]
 
 
-def build_classic_answer(query: str, hits: list[dict]) -> str:
-    if not hits:
-        return (
-            "매뉴얼에서 관련 항목을 찾지 못했습니다.\n"
-            "알람 번호, G/M 코드, 또는 '공구 길이 보정', '비상정지'처럼 기능 이름으로 다시 질문해 주세요."
+def search_manuals(query: str, limit: int = 4) -> list[dict]:
+    keyword_hits = search_keyword(query, limit=limit)
+    chroma_hits: list[dict] = []
+    try:
+        chroma_hits = chroma_search(query, limit=limit)
+    except Exception:
+        chroma_hits = []
+
+    merged: list[dict] = []
+    seen: set[str] = set()
+    for hit in keyword_hits + chroma_hits:
+        title = hit.get("title", "")
+        if title in seen:
+            continue
+        if not hit_matches_query(query, hit):
+            continue
+        seen.add(title)
+        merged.append(hit)
+    return merged[:limit]
+
+
+def query_codes(query: str) -> list[str]:
+    found: list[str] = []
+    seen: set[str] = set()
+    lowered = query.lower()
+    for token in tokens(query):
+        if re.fullmatch(r"[a-z]+\d+|\d+", token) and token not in seen:
+            found.append(token)
+            seen.add(token)
+    for match in re.finditer(r"\bg([0-9]{2,3})\b", lowered):
+        code = f"g{match.group(1)}"
+        if code not in seen:
+            found.append(code)
+            seen.add(code)
+    return found
+
+
+PAIR_CODES = (
+    ("g40", "g41"),
+    ("g40", "g42"),
+    ("g41", "g42"),
+    ("g43", "g49"),
+    ("g54", "g55"),
+    ("510", "511"),
+    ("410", "411"),
+)
+COMPARE_WORDS = ("차이", "비교", "그리고", "이랑", "또는", "차이점")
+
+
+def rank_core_hits(query: str, hits: list[dict]) -> list[dict]:
+    codes = query_codes(query)
+
+    def rank(hit: dict) -> tuple[float, float]:
+        hay = hit_text(hit)
+        title = hit.get("title", "").lower()
+        bonus = 0.0
+        for code in codes:
+            if code in title:
+                bonus += 10.0
+            elif code in hay:
+                bonus += 3.0
+        return (bonus, float(hit.get("score") or 0.0))
+
+    return sorted(hits, key=rank, reverse=True)
+
+
+def should_keep_second(query: str, first: dict, second: dict) -> bool:
+    codes = query_codes(query)
+    second_hay = hit_text(second)
+    if len(codes) >= 2:
+        return any(code in second_hay for code in codes)
+    lowered = query.lower()
+    if any(word in lowered for word in COMPARE_WORDS):
+        return True
+    if query_has_overtravel(query):
+        return hit_mentions_overtravel(second)
+    for left, right in PAIR_CODES:
+        both_in_query = (left in lowered or left in codes) and (
+            right in lowered or right in codes
         )
-    lines = [f"질문 '{query.strip()}'에 해당하는 매뉴얼 내용입니다.\n"]
+        if both_in_query and (left in second_hay or right in second_hay):
+            return True
+    score1 = float(first.get("score") or 0.0)
+    score2 = float(second.get("score") or 0.0)
+    if score1 > 0 and score2 >= score1 * 0.9:
+        return any(code in second_hay for code in codes) if codes else False
+    return False
+
+
+def select_core_hits(query: str, hits: list[dict]) -> list[dict]:
+    if not hits:
+        return []
+    ranked = rank_core_hits(query, hits)
+    chosen = [ranked[0]]
+    if len(ranked) > 1 and should_keep_second(query, ranked[0], ranked[1]):
+        chosen.append(ranked[1])
+    return chosen[:2]
+
+
+def shorten_excerpt(query: str, body: str, limit: int = 250) -> str:
+    text = " ".join((body or "").split())
+    if not text:
+        return ""
+    terms = strong_query_terms(query)
+    parts = [part.strip() for part in re.split(r"(?<=[\.!?다요])\s+|\n+", text) if part.strip()]
+    picked = [part for part in parts if any(term in part.lower() for term in terms)]
+    if not picked:
+        picked = parts[:2] or [text]
+    out = " ".join(picked)
+    if len(out) > limit:
+        out = out[:limit].rstrip() + "…"
+    return out
+
+
+def build_chat_answer(query: str, hits: list[dict]) -> str:
+    if not hits:
+        return MISSING_ANSWER
+    lines = []
     for hit in hits:
-        excerpt = hit["body"].strip()
-        if len(excerpt) > 700:
-            excerpt = excerpt[:700].rstrip() + "…"
+        excerpt = shorten_excerpt(query, hit.get("body", ""))
         lines.append(f"[{hit['title']}]\n{excerpt}")
     return "\n\n".join(lines)
 
 
-def lookup_key(query: str, hits: list[dict]) -> str:
-    joined = query.lower() + " " + " ".join(hit["title"].lower() for hit in hits)
+def build_classic_answer(query: str, hits: list[dict]) -> str:
+    return build_chat_answer(query, select_core_hits(query, hits))
+
+
+def lookup_key(query: str) -> str:
+    joined = query.lower()
+    if query_has_overtravel(query):
+        if any(word in joined for word in ("-", "마이너스", "음방향", "−")):
+            return "511"
+        return "510"
     match = re.search(r"\bg([0-9]{2,3})\b", joined)
     if match:
         return f"g{match.group(1)}"
@@ -394,6 +561,17 @@ def lookup_key(query: str, hits: list[dict]) -> str:
     return ""
 
 
+def hit_matches_key(hit: dict, key: str) -> bool:
+    if not key:
+        return False
+    hay = f"{hit.get('title', '')} {hit.get('body', '')}".lower()
+    if key in ("510", "511"):
+        return key in hay or query_has_overtravel(hay)
+    if re.fullmatch(r"\d+", key):
+        return key in hay
+    return key.lower() in hay
+
+
 def machine_note(key: str, machine: str) -> str:
     extra = MACHINE_NOTES.get((key, machine), "")
     if extra:
@@ -402,31 +580,37 @@ def machine_note(key: str, machine: str) -> str:
 
 
 def build_card(query: str, hits: list[dict], machine: str) -> AnswerCard:
-    key = lookup_key(query, hits)
+    llm_data = generate_card_data(query, hits, machine) if hits else None
+    if llm_data:
+        return AnswerCard(**llm_data)
+    key = lookup_key(query)
     card = None
-    if key in ALARM_CARDS:
+    if hits:
+        hit = hits[0]
+        excerpt = hit["body"].strip()
+        if len(excerpt) > 400:
+            excerpt = excerpt[:400].rstrip() + "…"
+        base = ALARM_CARDS.get(key) or CODE_CARDS.get(key) or HOWTO_CARDS.get(key)
+        card = AnswerCard(
+            kind=base.kind if base else "generic",
+            title=hit["title"],
+            lead=base.lead if base else "매뉴얼 기준으로 답합니다.",
+            cause=base.cause if base else excerpt[:180],
+            action=excerpt,
+            caution=base.caution if base else "해당 기종 화면·파라미터와 한 번 대조하세요.",
+            badges=list(base.badges) if base else [],
+        )
+    elif key in ALARM_CARDS:
         card = ALARM_CARDS[key].model_copy()
     elif key in CODE_CARDS:
         card = CODE_CARDS[key].model_copy()
     elif key in HOWTO_CARDS:
         card = HOWTO_CARDS[key].model_copy()
-    elif hits:
-        hit = hits[0]
-        card = AnswerCard(
-            kind="generic",
-            title=hit["title"],
-            lead="설명보다 지금 할 일부터 보세요.",
-            action=hit["body"][:280],
-            caution="해당 기종 화면과 한 번 대조하세요.",
-            badges=[],
-        )
     else:
-        card = AnswerCard(
+        return AnswerCard(
             kind="generic",
             title="매뉴얼에 없음",
             lead="그 번호·기능 이름으로는 못 찾았습니다.",
-            action="알람 번호, G/M 코드, 또는 '비상정지'처럼 짧게 다시 물어보세요.",
-            caution="추측으로 리셋하고 돌리지 마세요.",
         )
     card.note = machine_note(key, machine)
     return card
@@ -444,7 +628,9 @@ def health() -> dict:
         "port": APP_PORT,
         "host": APP_HOST,
         "db": str(DB_PATH),
-        "manual_chunks": len(CHUNKS),
+        "manual_chunks": chunk_count() or len(CHUNKS),
+        "llm_ready": model_ready(),
+        "chroma": "file",
         "forbidden_ports": sorted(FORBIDDEN_PORTS),
     }
 
@@ -458,20 +644,39 @@ def chat(req: ChatRequest) -> ChatResponse:
     machine = req.machine if req.machine in MACHINES else "mill_0i"
     mode = "classic" if req.mode == "classic" else "workshop"
     hits = search_manuals(message)
-    classic_answer = build_classic_answer(message, hits)
     card = build_card(message, hits, machine)
-    answer = classic_answer if mode == "classic" else card_to_text(card)
+    source = "chip" if req.source == "chip" else "chat"
+    if source == "chat" or mode == "classic":
+        core = select_core_hits(message, hits)
+        if not core:
+            answer = MISSING_ANSWER
+            out_card = None
+            used = []
+        else:
+            answer = generate_chat_answer(message, core, machine) or build_chat_answer(
+                message, core
+            )
+            out_card = None
+            used = core
+    elif card.title == "매뉴얼에 없음":
+        answer = MISSING_ANSWER
+        out_card = card if mode == "workshop" else None
+        used = []
+    else:
+        answer = card_to_text(card)
+        out_card = card
+        used = hits
     save_message(session_id, "user", message)
     save_message(session_id, "assistant", answer)
     sources = [
         Source(title=hit["title"], file=hit["file"], score=hit["score"])
-        for hit in hits
+        for hit in used
     ]
     return ChatResponse(
         answer=answer,
         sources=sources,
         session_id=session_id,
-        card=card if mode == "workshop" else None,
+        card=out_card,
         machine=machine,
     )
 

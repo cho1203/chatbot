@@ -88,10 +88,13 @@ function renderWorkshopChips() {
 function addPlainBubble(role, text, sources) {
   const wrap = document.createElement("article");
   wrap.className = `bubble ${role}`;
-  const meta = document.createElement("span");
-  meta.className = "meta";
-  meta.textContent = role === "user" ? "질문" : uiMode() === "workshop" ? "현장 조수" : "매뉴얼 답변";
-  wrap.appendChild(meta);
+  const missing = role === "bot" && text.startsWith("매뉴얼에 없음");
+  if (!missing) {
+    const meta = document.createElement("span");
+    meta.className = "meta";
+    meta.textContent = role === "user" ? "질문" : uiMode() === "workshop" ? "현장 조수" : "매뉴얼 답변";
+    wrap.appendChild(meta);
+  }
   wrap.appendChild(document.createTextNode(text));
   if (sources && sources.length) {
     const src = document.createElement("div");
@@ -107,10 +110,13 @@ function addCardBubble(data) {
   const card = data.card || {};
   const wrap = document.createElement("article");
   wrap.className = "bubble bot";
-  const meta = document.createElement("span");
-  meta.className = "meta";
-  meta.textContent = "현장 조수";
-  wrap.appendChild(meta);
+  const missing = card.title === "매뉴얼에 없음";
+  if (!missing) {
+    const meta = document.createElement("span");
+    meta.className = "meta";
+    meta.textContent = "현장 조수";
+    wrap.appendChild(meta);
+  }
 
   if (card.badges && card.badges.length) {
     const row = document.createElement("div");
@@ -178,7 +184,7 @@ function addCardBubble(data) {
   chatEl.scrollTop = chatEl.scrollHeight;
 }
 
-async function sendMessage(text) {
+async function sendMessage(text, origin = "chat") {
   const message = text.trim();
   if (!message) return;
 
@@ -186,6 +192,7 @@ async function sendMessage(text) {
   inputEl.value = "";
   sendEl.disabled = true;
   const mode = uiMode();
+  const source = origin === "chip" ? "chip" : "chat";
 
   try {
     const res = await fetch("/api/chat", {
@@ -196,13 +203,14 @@ async function sendMessage(text) {
         session_id: sessionId(),
         machine: machine(),
         mode,
+        source,
       }),
     });
     const data = await res.json();
     if (!res.ok) {
       throw new Error(data.detail || "서버 오류");
     }
-    if (mode === "workshop" && data.card) {
+    if (mode === "workshop" && source === "chip" && data.card) {
       addCardBubble(data);
     } else {
       addPlainBubble("bot", data.answer, data.sources);
@@ -228,7 +236,7 @@ function welcome() {
   } else {
     addPlainBubble(
       "bot",
-      "기계부터 고르세요. 알람 번호나 G코드를 바로 쳐도 됩니다.\n설명보다 지금 할 일 순서로 답합니다."
+      "기계부터 고르세요. 아래 버튼은 원인·지금 할 일·주의 카드로 답합니다.\n직접 질문하면 매뉴얼 설명으로 답합니다."
     );
   }
 }
@@ -255,12 +263,12 @@ tabsEl.addEventListener("click", (event) => {
 
 suggestWorkshopEl.addEventListener("click", (event) => {
   const btn = event.target.closest("button[data-q]");
-  if (btn) sendMessage(btn.dataset.q);
+  if (btn) sendMessage(btn.dataset.q, "chip");
 });
 
 suggestEl.addEventListener("click", (event) => {
   const btn = event.target.closest("button[data-q]");
-  if (btn) sendMessage(btn.dataset.q);
+  if (btn) sendMessage(btn.dataset.q, "chip");
 });
 
 formEl.addEventListener("submit", (event) => {

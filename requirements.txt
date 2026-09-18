@@ -1,3 +1,7 @@
 fastapi>=0.115.0
 uvicorn>=0.32.0
 python-dotenv>=1.0.0
+chromadb>=0.5.0
+# 모델 파일이 있을 때만 사용. 없으면 검색 결과로 답을 만듭니다.
+llama-cpp-python>=0.3.0
+
