@@ -338,6 +338,16 @@ def tokens(text: str) -> list[str]:
     return [item.lower() for item in TOKEN_RE.findall(text)]
 
 
+def query_asks_alarm_000(query: str) -> bool:
+    return bool(re.search(r"(?<!\d)000(?!\d)", query))
+
+
+def hit_is_alarm_000(hit: dict) -> bool:
+    title = (hit.get("title") or "").lower()
+    hay = hit_text(hit)
+    return "알람 000" in hay or title.startswith("알람 000")
+
+
 def query_has_overtravel(query: str) -> bool:
     lowered = query.lower()
     return any(term in lowered for term in OVERTRAVEL_TERMS)
@@ -365,6 +375,8 @@ def hit_matches_query(query: str, hit: dict) -> bool:
     terms = strong_query_terms(query)
     if not terms:
         return False
+    if hit_is_alarm_000(hit) and not query_asks_alarm_000(query):
+        return False
     if query_has_overtravel(query) and not hit_mentions_overtravel(hit):
         return False
     hay = hit_text(hit)
@@ -381,7 +393,10 @@ def search_keyword(query: str, limit: int = 3) -> list[dict]:
     codes = [token for token in query_tokens if re.fullmatch(r"[a-z]+\d+|\d+", token)]
     scored: list[dict] = []
     overtravel = query_has_overtravel(query)
+    allow_000 = query_asks_alarm_000(query)
     for chunk in CHUNKS:
+        if hit_is_alarm_000(chunk) and not allow_000:
+            continue
         hay = chunk["haystack"]
         title_l = chunk["title"].lower()
         if codes and not any(code in hay for code in codes):
@@ -543,13 +558,15 @@ def lookup_key(query: str) -> str:
         if any(word in joined for word in ("-", "마이너스", "음방향", "−")):
             return "511"
         return "510"
+    if query_asks_alarm_000(query):
+        return "000"
     match = re.search(r"\bg([0-9]{2,3})\b", joined)
     if match:
         return f"g{match.group(1)}"
     match = re.search(r"ps\s*0*(\d+)", joined)
     if match:
         return f"ps{int(match.group(1)):04d}"
-    match = re.search(r"\b(410|411|414|510|511|000|100|101)\b", joined)
+    match = re.search(r"\b(410|411|414|510|511|100|101)\b", joined)
     if match:
         return match.group(1)
     if "비상" in joined:
