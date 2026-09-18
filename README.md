@@ -11,11 +11,23 @@
 ## 구조
 
 ```text
-frontend/          화면 (HTML/CSS/JS)
-backend/server.py API + 정적 파일 서빙
-data/manuals/      FANUC 매뉴얼 텍스트
-data/chatbot.db    대화 저장 (실행 시 생성)
+frontend/          화면
+backend/server.py API (8787)
+backend/ingest.py  매뉴얼 → Chroma
+backend/rag.py     Chroma 검색
+backend/llm.py     로컬 LLM (모델 파일이 있을 때)
+data/manuals/      매뉴얼 텍스트 (6.1 공구길이보정 포함)
+data/chroma/       Chroma 파일 DB (포트 없음)
+data/chatbot.db    대화 저장
 ```
+
+매뉴얼을 바꾼 뒤 인덱스를 다시 넣습니다.
+
+```bash
+PYTHONPATH=.pip python3 backend/ingest.py
+```
+
+LLM을 쓰려면 GGUF 모델 경로를 `.env`의 `LLM_MODEL_PATH`에 넣습니다. 경로가 비어 있으면 Chroma 검색 결과로 카드를 만듭니다. Ollama(11434)는 사용하지 않습니다.
 
 ## 실행
 
